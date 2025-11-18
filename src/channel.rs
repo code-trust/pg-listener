@@ -1,13 +1,13 @@
-use std::fmt::{self, Display};
-
 use anyhow::Context as _;
 use anyhow::{Result, ensure};
+use derive_more::{AsRef, Display};
 use serde::Serialize;
 use sqlx::{PgConnection, PgPool};
 use std::marker::PhantomData;
 
 // Channel max length 63
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display)]
+#[as_ref(str)]
 pub struct Channel(String);
 
 impl TryFrom<String> for Channel {
@@ -23,20 +23,9 @@ impl TryFrom<String> for Channel {
     }
 }
 
-impl AsRef<str> for Channel {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Display for Channel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, AsRef)]
 pub struct TypedChannel<T> {
+    #[as_ref]
     inner: Channel,
     _phantom: PhantomData<T>,
 }
@@ -80,11 +69,5 @@ impl<T> TypedChannel<T> {
 impl<T> From<TypedChannel<T>> for Channel {
     fn from(channel: TypedChannel<T>) -> Self {
         channel.inner
-    }
-}
-
-impl<T> AsRef<Channel> for TypedChannel<T> {
-    fn as_ref(&self) -> &Channel {
-        &self.inner
     }
 }
