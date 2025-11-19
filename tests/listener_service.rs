@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use backend::{
-    configuration::get_configuration,
+    configuration::{ConfigurationDirectory, get_configuration},
     listener::{Channel, ListenerService, NotificationListener, TypedChannel, TypedRecvError},
 };
 use secrecy::ExposeSecret;
@@ -245,7 +245,8 @@ impl TestListenerService {
 }
 
 async fn create_listener_service() -> (TestListenerService, PgPool) {
-    let mut configuration = get_configuration().expect("Failed to get configuration");
+    let mut configuration =
+        get_configuration(ConfigurationDirectory::default()).expect("Failed to get configuration");
     configuration.database.url = "postgres://{user}:{pass}@localhost:34006/app".to_owned();
 
     let tenant_url = configuration.database.tenant_url();
