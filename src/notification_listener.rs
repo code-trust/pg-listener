@@ -3,7 +3,6 @@ use std::time::Duration;
 use anyhow::{
     Context as _,
     Result,
-    anyhow,
 };
 use serde::Deserialize;
 use tokio::sync::{
@@ -50,7 +49,7 @@ impl NotificationListener {
 
         rx.await
             .context("listen service unavailable")?
-            .map_err(|e| anyhow!("failed to listen to channel: {e}"))?;
+            .context("failed to listen to channel")?;
 
         Ok(ChannelGuard {
             channel,
