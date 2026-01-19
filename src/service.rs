@@ -71,7 +71,7 @@ impl ListenerService {
         self.channel_refs.clone()
     }
 
-    pub fn start(self, parent: &mut SubsystemHandle) {
+    pub fn start(self, parent: &SubsystemHandle) {
         let mut listener = self.pg_listener;
         let tx = self.notification_tx;
         let mut listen_rx = self.listen_rx;
