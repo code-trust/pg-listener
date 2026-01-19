@@ -13,7 +13,7 @@ use backend::listener::{
     TypedChannel,
     TypedRecvError,
 };
-use secrecy::ExposeSecret;
+use secrecy::ExposeSecret as _;
 use serde::{
     Deserialize,
     Serialize,
