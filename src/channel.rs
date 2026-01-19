@@ -1,9 +1,19 @@
-use anyhow::Context as _;
-use anyhow::{Result, ensure};
-use derive_more::{AsRef, Display};
-use serde::Serialize;
-use sqlx::{PgConnection, PgPool};
 use std::marker::PhantomData;
+
+use anyhow::{
+    Context as _,
+    Result,
+    ensure,
+};
+use derive_more::{
+    AsRef,
+    Display,
+};
+use serde::Serialize;
+use sqlx::{
+    PgConnection,
+    PgPool,
+};
 
 // Channel max length 63
 #[derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display)]

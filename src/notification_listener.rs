@@ -1,13 +1,23 @@
 use std::time::Duration;
 
-use anyhow::Context as _;
-use anyhow::Result;
-use anyhow::anyhow;
+use anyhow::{
+    Context as _,
+    Result,
+    anyhow,
+};
 use serde::Deserialize;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{
+    broadcast,
+    mpsc,
+    oneshot,
+};
 
+use crate::listener::service::ListenMessage;
 use crate::listener::{
-    Channel, Notification, TypedChannel, TypedNotification, service::ListenMessage,
+    Channel,
+    Notification,
+    TypedChannel,
+    TypedNotification,
 };
 
 #[derive(Clone)]

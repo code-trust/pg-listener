@@ -1,11 +1,23 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
-use backend::{
-    configuration::{ConfigurationDirectory, get_configuration},
-    listener::{Channel, ListenerService, NotificationListener, TypedChannel, TypedRecvError},
+use backend::configuration::{
+    ConfigurationDirectory,
+    get_configuration,
+};
+use backend::listener::{
+    Channel,
+    ListenerService,
+    NotificationListener,
+    TypedChannel,
+    TypedRecvError,
 };
 use secrecy::ExposeSecret;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_graceful_shutdown::Toplevel;
