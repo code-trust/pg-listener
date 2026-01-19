@@ -1,11 +1,27 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use anyhow::{Result, ensure};
+use anyhow::{
+    Result,
+    ensure,
+};
 use sqlx::postgres::PgListener;
-use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
-use tokio_graceful_shutdown::{SubsystemBuilder, SubsystemHandle};
+use tokio::sync::{
+    RwLock,
+    broadcast,
+    mpsc,
+    oneshot,
+};
+use tokio_graceful_shutdown::{
+    SubsystemBuilder,
+    SubsystemHandle,
+};
 
-use crate::listener::{Channel, Notification, NotificationListener};
+use crate::listener::{
+    Channel,
+    Notification,
+    NotificationListener,
+};
 
 pub type ListenMessage = (Channel, oneshot::Sender<Result<()>>);
 
