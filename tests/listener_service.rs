@@ -6,6 +6,7 @@ use backend::configuration::{
     ConfigurationDirectory,
     get_configuration,
 };
+use backend::database::DatabaseService;
 use backend::listener::{
     Channel,
     ListenerService,
@@ -260,6 +261,12 @@ async fn create_listener_service() -> (TestListenerService, PgPool) {
     let mut configuration =
         get_configuration(ConfigurationDirectory::default()).expect("Failed to get configuration");
     configuration.database.url = "postgres://{user}:{pass}@localhost:34006/app".to_owned();
+    configuration.database.migrate = true;
+
+    // We need the database setup, but not the service itself
+    let _ = DatabaseService::try_new(&configuration.database)
+        .await
+        .expect("Failed to setup database");
 
     let tenant_url = configuration.database.tenant_url();
     let url = tenant_url.expose_secret();
