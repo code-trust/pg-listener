@@ -52,7 +52,7 @@ impl<T> TryFrom<String> for TypedChannel<T> {
 }
 
 #[cfg_attr(not(feature = "sqlx"), stub_macros::methods)]
-impl<T> TypedChannel<T> {
+impl<T: Sync> TypedChannel<T> {
     pub async fn publish(&self, conn: &mut PgConnection, message: &T) -> Result<()>
     where
         T: Serialize,
