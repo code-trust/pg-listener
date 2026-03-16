@@ -312,9 +312,10 @@ where
             return;
         }
 
-        if start.elapsed() >= timeout {
-            panic!("Condition was not met within {timeout:?}");
-        }
+        assert!(
+            start.elapsed() < timeout,
+            "Condition was not met within {timeout:?}"
+        );
 
         tokio::time::sleep(check_interval).await;
     }
