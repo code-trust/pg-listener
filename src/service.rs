@@ -129,21 +129,15 @@ impl ListenerService {
         channel: Channel,
         response_tx: oneshot::Sender<Result<()>>,
     ) {
-        let mut refs = channel_refs.write().await;
-        let count = refs.entry(channel.clone()).or_default();
-
-        if *count > 0 {
+        if let Some(count) = channel_refs.write().await.get_mut(&channel) {
             *count += 1;
             tracing::info!("Channel {} subscription count: {}", channel, count);
             let _ = response_tx.send(Ok(()));
             return;
         }
 
-        drop(refs);
-
         if let Err(e) = listener.listen(channel.as_ref()).await {
             tracing::error!("Failed to listen to channel {}: {}", channel, e);
-            channel_refs.write().await.remove(&channel);
             let _ = response_tx.send(Err(e.into()));
             return;
         }
@@ -159,40 +153,36 @@ impl ListenerService {
         channel: Channel,
         response_tx: oneshot::Sender<Result<()>>,
     ) {
-        let mut refs = channel_refs.write().await;
-
-        let Some(count) = refs.get_mut(&channel) else {
-            tracing::error!("cannot unlisten unknown channel: {channel}");
-            let _ = response_tx.send(Ok(()));
-            return;
-        };
-
-        if *count == 0 {
-            tracing::error!("cannot unlisten channel that has no subscriptions: {channel}");
-            let _ = response_tx.send(Ok(()));
-            return;
-        }
-
-        if *count == 1 {
-            drop(refs);
-            // Last subscription dropped - actually unlisten
-            if let Err(e) = listener.unlisten(channel.as_ref()).await {
-                tracing::error!("Failed to unlisten from channel {}: {}", channel, e);
-                let _ = response_tx.send(Err(e.into()));
+        match channel_refs.write().await.get_mut(&channel) {
+            None => {
+                tracing::error!("cannot unlisten unknown channel: {channel}");
+                let _ = response_tx.send(Ok(()));
                 return;
             }
+            Some(0) => unreachable!(),
+            Some(1) => {}
+            Some(count) => {
+                *count -= 1;
 
-            tracing::info!("Stopped listening to channel: {}", channel);
-            channel_refs.write().await.remove(&channel);
-        } else {
-            *count -= 1;
-            tracing::info!(
-                "Channel {} subscription count: {} (still active)",
-                channel,
-                count
-            );
+                tracing::info!(
+                    "Channel {} subscription count: {} (still active)",
+                    channel,
+                    count
+                );
+
+                let _ = response_tx.send(Ok(()));
+                return;
+            }
         }
 
+        if let Err(e) = listener.unlisten(channel.as_ref()).await {
+            tracing::error!("Failed to unlisten from channel {}: {}", channel, e);
+            let _ = response_tx.send(Err(e.into()));
+            return;
+        }
+
+        tracing::info!("Stopped listening to channel: {}", channel);
+        channel_refs.write().await.remove(&channel);
         let _ = response_tx.send(Ok(()));
     }
 
