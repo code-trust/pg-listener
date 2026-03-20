@@ -141,18 +141,16 @@ impl ListenerService {
 
         drop(refs);
 
-        match listener.listen(channel.as_ref()).await {
-            Err(e) => {
-                tracing::error!("Failed to listen to channel {}: {}", channel, e);
-                channel_refs.write().await.remove(&channel);
-                let _ = response_tx.send(Err(e.into()));
-            }
-            Ok(()) => {
-                tracing::info!("Now listening to channel: {} (refs: 1)", channel);
-                channel_refs.write().await.insert(channel, 1);
-                let _ = response_tx.send(Ok(()));
-            }
+        if let Err(e) = listener.listen(channel.as_ref()).await {
+            tracing::error!("Failed to listen to channel {}: {}", channel, e);
+            channel_refs.write().await.remove(&channel);
+            let _ = response_tx.send(Err(e.into()));
+            return;
         }
+
+        tracing::info!("Now listening to channel: {} (refs: 1)", channel);
+        channel_refs.write().await.insert(channel, 1);
+        let _ = response_tx.send(Ok(()));
     }
 
     async fn handle_unlisten_request(
@@ -178,17 +176,14 @@ impl ListenerService {
         if *count == 1 {
             drop(refs);
             // Last subscription dropped - actually unlisten
-            match listener.unlisten(channel.as_ref()).await {
-                Err(e) => {
-                    tracing::error!("Failed to unlisten from channel {}: {}", channel, e);
-                    let _ = response_tx.send(Err(e.into()));
-                }
-                Ok(()) => {
-                    tracing::info!("Stopped listening to channel: {}", channel);
-                    channel_refs.write().await.remove(&channel);
-                    let _ = response_tx.send(Ok(()));
-                }
+            if let Err(e) = listener.unlisten(channel.as_ref()).await {
+                tracing::error!("Failed to unlisten from channel {}: {}", channel, e);
+                let _ = response_tx.send(Err(e.into()));
+                return;
             }
+
+            tracing::info!("Stopped listening to channel: {}", channel);
+            channel_refs.write().await.remove(&channel);
         } else {
             *count -= 1;
             tracing::info!(
@@ -196,8 +191,9 @@ impl ListenerService {
                 channel,
                 count
             );
-            let _ = response_tx.send(Ok(()));
         }
+
+        let _ = response_tx.send(Ok(()));
     }
 
     async fn handle_notification(
