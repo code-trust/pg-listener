@@ -229,6 +229,68 @@ async fn handles_rapid_subscribe_unsubscribe() {
     .await;
 }
 
+#[tokio::test]
+async fn cancelled_listen_after_ack_does_not_leak_subscription_state() {
+    let (listener_service, _pool) = create_listener_service().await;
+    let listener = listener_service.notification_listener();
+    let channel = simple_channel("cancelled_listen_after_ack_does_not_leak_subscription_state");
+
+    {
+        let cancelled_listen = listener.listen_typed(channel.clone());
+        tokio::pin!(cancelled_listen);
+
+        assert!(futures::poll!(cancelled_listen.as_mut()).is_pending());
+
+        wait_until(
+            || async { listener_service.channel_ref_count(channel.as_ref()).await == 1 },
+            Duration::from_millis(500),
+        )
+        .await;
+    }
+
+    wait_until(
+        || async { listener_service.channel_ref_count(channel.as_ref()).await == 0 },
+        Duration::from_millis(500),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cancelled_second_listen_keeps_existing_subscription_active() {
+    let (listener_service, pool) = create_listener_service().await;
+    let listener = listener_service.notification_listener();
+    let channel = simple_channel("cancelled_second_listen_keeps_existing_subscription_active");
+    let mut active_guard = listener.listen_typed(channel.clone()).await.unwrap();
+
+    {
+        let cancelled_listen = listener.listen_typed(channel.clone());
+        tokio::pin!(cancelled_listen);
+
+        assert!(futures::poll!(cancelled_listen.as_mut()).is_pending());
+
+        wait_until(
+            || async { listener_service.channel_ref_count(channel.as_ref()).await == 2 },
+            Duration::from_millis(500),
+        )
+        .await;
+    }
+
+    wait_until(
+        || async { listener_service.channel_ref_count(channel.as_ref()).await == 1 },
+        Duration::from_millis(500),
+    )
+    .await;
+
+    channel
+        .publish_pool(&pool, &"still subscribed".to_owned())
+        .await
+        .unwrap();
+
+    let notification = active_guard.recv().await.unwrap();
+    assert_eq!(notification.channel, channel.into());
+    assert_eq!(notification.payload, "still subscribed");
+}
+
 fn simple_channel(channel: &str) -> TypedChannel<String> {
     TypedChannel::try_from(channel.to_owned()).unwrap()
 }
@@ -269,8 +331,7 @@ async fn create_listener_service() -> (TestListenerService, PgPool) {
         .expect("Failed to setup database");
 
     let tenant_url = configuration.database.tenant_url();
-    let url = tenant_url.expose_secret();
-    let pool = PgPool::connect(url)
+    let pool = PgPool::connect(tenant_url.expose_secret())
         .await
         .expect("Failed to connect to database");
 

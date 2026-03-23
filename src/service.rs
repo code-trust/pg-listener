@@ -25,13 +25,45 @@ use crate::listener::{
 
 pub type ListenMessage = (Channel, oneshot::Sender<Result<()>>);
 
+pub enum ListenerCommand {
+    Listen(ListenMessage),
+    Unlisten(ListenMessage),
+}
+
+impl ListenerCommand {
+    async fn handle(
+        self,
+        listener: &mut PgListener,
+        channel_refs: &Arc<RwLock<HashMap<Channel, usize>>>,
+    ) {
+        match self {
+            Self::Listen((channel, response_tx)) => {
+                ListenerService::handle_listen_request(
+                    listener,
+                    channel_refs,
+                    channel,
+                    response_tx,
+                )
+                .await;
+            }
+            Self::Unlisten((channel, response_tx)) => {
+                ListenerService::handle_unlisten_request(
+                    listener,
+                    channel_refs,
+                    channel,
+                    response_tx,
+                )
+                .await;
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ListenerService {
     pg_listener: PgListener,
-    listen_tx: mpsc::Sender<ListenMessage>,
-    unlisten_tx: mpsc::Sender<ListenMessage>,
-    listen_rx: mpsc::Receiver<ListenMessage>,
-    unlisten_rx: mpsc::Receiver<ListenMessage>,
+    command_tx: mpsc::Sender<ListenerCommand>,
+    command_rx: mpsc::Receiver<ListenerCommand>,
     notification_tx: broadcast::Sender<Notification>,
     channel_refs: Arc<RwLock<HashMap<Channel, usize>>>,
 }
@@ -39,27 +71,20 @@ pub struct ListenerService {
 impl ListenerService {
     pub async fn try_new(pool: &sqlx::PgPool) -> Result<Self> {
         let pg_listener = PgListener::connect_with(pool).await?;
-        let (listen_tx, listen_rx) = mpsc::channel::<ListenMessage>(1024);
+        let (command_tx, command_rx) = mpsc::channel::<ListenerCommand>(1024);
         let (tx, _rx) = broadcast::channel(1024);
-        let (unlisten_tx, unlisten_rx) = mpsc::channel(1024);
 
         Ok(Self {
             pg_listener,
-            listen_tx,
-            listen_rx,
-            unlisten_tx,
-            unlisten_rx,
+            command_tx,
+            command_rx,
             notification_tx: tx,
             channel_refs: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
     pub fn notification_listener(&self) -> NotificationListener {
-        NotificationListener::new(
-            self.listen_tx.clone(),
-            self.unlisten_tx.clone(),
-            self.notification_tx.clone(),
-        )
+        NotificationListener::new(self.command_tx.clone(), self.notification_tx.clone())
     }
 
     pub async fn channel_ref_count(&self, channel: &Channel) -> usize {
@@ -74,8 +99,7 @@ impl ListenerService {
     pub fn start(self, parent: &SubsystemHandle) {
         let mut listener = self.pg_listener;
         let tx = self.notification_tx;
-        let mut listen_rx = self.listen_rx;
-        let mut unlisten_rx = self.unlisten_rx;
+        let mut command_rx = self.command_rx;
         let channel_refs = self.channel_refs;
 
         parent.start(SubsystemBuilder::new(
@@ -89,22 +113,7 @@ impl ListenerService {
                             tracing::info!("shutdown requested for listener");
                             break;
                         }
-                        Some((channel, response_tx)) = listen_rx.recv() => {
-                            Self::handle_listen_request(
-                                &mut listener,
-                                &channel_refs,
-                                channel,
-                                response_tx,
-                            ).await;
-                        }
-                        Some((channel, response_tx)) = unlisten_rx.recv() => {
-                            Self::handle_unlisten_request(
-                                &mut listener,
-                                &channel_refs,
-                                channel,
-                                response_tx,
-                            ).await;
-                        }
+                        Some(command) = command_rx.recv() => command.handle(&mut listener, &channel_refs).await,
                         result = Self::handle_notification(&mut listener, &tx) => {
                             if let Err(e) = result {
                                 tracing::error!("Notification handling error: {e}");
@@ -133,6 +142,7 @@ impl ListenerService {
             *count += 1;
             tracing::info!("Channel {} subscription count: {}", channel, count);
             let _ = response_tx.send(Ok(()));
+
             return;
         }
 
@@ -143,7 +153,7 @@ impl ListenerService {
         }
 
         tracing::info!("Now listening to channel: {} (refs: 1)", channel);
-        channel_refs.write().await.insert(channel, 1);
+        channel_refs.write().await.insert(channel.clone(), 1);
         let _ = response_tx.send(Ok(()));
     }
 
@@ -155,7 +165,7 @@ impl ListenerService {
     ) {
         match channel_refs.write().await.get_mut(&channel) {
             None => {
-                tracing::error!("cannot unlisten unknown channel: {channel}");
+                tracing::debug!("ignoring unlisten for inactive channel: {channel}");
                 let _ = response_tx.send(Ok(()));
                 return;
             }
