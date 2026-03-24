@@ -14,6 +14,7 @@ pub use notification::{
 pub use notification_listener::{
     ChannelGuard,
     NotificationListener,
+    TypedChannelGuard,
     TypedRecvError,
 };
 pub use service::{
