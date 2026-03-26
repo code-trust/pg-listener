@@ -22,18 +22,11 @@ use crate::listener::{
 #[derive(Clone)]
 pub struct NotificationListener {
     command_tx: mpsc::Sender<ListenerCommand>,
-    notification_tx: broadcast::Sender<Notification>,
 }
 
 impl NotificationListener {
-    pub fn new(
-        command_tx: mpsc::Sender<ListenerCommand>,
-        notification_tx: broadcast::Sender<Notification>,
-    ) -> Self {
-        Self {
-            command_tx,
-            notification_tx,
-        }
+    pub fn new(command_tx: mpsc::Sender<ListenerCommand>) -> Self {
+        Self { command_tx }
     }
 
     pub async fn listen(&self, channel: Channel) -> Result<ChannelGuard> {
@@ -48,12 +41,12 @@ impl NotificationListener {
 
         let result = rx.await.context("listen service unavailable")?;
         cleanup.disarm();
-        result.context("failed to listen to channel")?;
+        let receiver = result.context("failed to listen to channel")?;
 
         Ok(ChannelGuard {
             channel,
             command_tx: self.command_tx.clone(),
-            receiver: self.notification_tx.subscribe(),
+            receiver,
         })
     }
 
@@ -138,13 +131,7 @@ impl PendingListenGuard {
 
 impl ChannelGuard {
     pub async fn recv(&mut self) -> Result<Notification, broadcast::error::RecvError> {
-        loop {
-            let notification = self.receiver.recv().await?;
-
-            if self.channel == notification.channel {
-                return Ok(notification);
-            }
-        }
+        self.receiver.recv().await
     }
 }
 
@@ -195,8 +182,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_listen_before_ack_enqueues_release_after_listen() {
         let (command_tx, mut command_rx) = mpsc::channel(2);
-        let (notification_tx, _notification_rx) = broadcast::channel(1);
-        let listener = NotificationListener::new(command_tx, notification_tx);
+        let listener = NotificationListener::new(command_tx);
         let channel = Channel::try_from("cancelled_before_ack".to_owned()).unwrap();
 
         {
@@ -227,8 +213,7 @@ mod tests {
     #[tokio::test]
     async fn failed_listen_does_not_queue_unlisten_cleanup() {
         let (command_tx, mut command_rx) = mpsc::channel(1);
-        let (notification_tx, _notification_rx) = broadcast::channel(1);
-        let listener = NotificationListener::new(command_tx, notification_tx);
+        let listener = NotificationListener::new(command_tx);
         let channel = Channel::try_from("failed_listen_cleanup".to_owned()).unwrap();
         let expected_channel = channel.clone();
 

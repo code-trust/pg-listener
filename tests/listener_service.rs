@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use backend::configuration::{
@@ -10,6 +8,7 @@ use backend::database::DatabaseService;
 use backend::listener::{
     Channel,
     ListenerService,
+    ListenerSubscriptions,
     NotificationListener,
     TypedChannel,
     TypedRecvError,
@@ -20,7 +19,6 @@ use serde::{
     Serialize,
 };
 use sqlx::PgPool;
-use tokio::sync::RwLock;
 use tokio_graceful_shutdown::Toplevel;
 
 #[tokio::test]
@@ -306,7 +304,7 @@ struct ComplexMessage {
 
 struct TestListenerService {
     listener: NotificationListener,
-    channel_refs: Arc<RwLock<HashMap<Channel, usize>>>,
+    subscriptions: ListenerSubscriptions,
 }
 impl TestListenerService {
     pub fn notification_listener(&self) -> NotificationListener {
@@ -314,8 +312,7 @@ impl TestListenerService {
     }
 
     pub async fn channel_ref_count(&self, channel: &Channel) -> usize {
-        let refs = self.channel_refs.read().await;
-        *refs.get(channel).unwrap_or(&0)
+        self.subscriptions.channel_ref_count(channel).await
     }
 }
 
@@ -340,7 +337,7 @@ async fn create_listener_service() -> (TestListenerService, PgPool) {
         .expect("Failed to create listener service");
 
     let listener = listener_service.notification_listener();
-    let channel_refs = listener_service.channel_refs();
+    let subscriptions = listener_service.subscriptions();
 
     tokio::spawn(async move {
         Toplevel::new(async |subsys: &mut _| {
@@ -354,7 +351,7 @@ async fn create_listener_service() -> (TestListenerService, PgPool) {
     (
         TestListenerService {
             listener,
-            channel_refs,
+            subscriptions,
         },
         pool,
     )

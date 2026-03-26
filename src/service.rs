@@ -23,24 +23,26 @@ use crate::listener::{
     NotificationListener,
 };
 
-pub type ListenMessage = (Channel, oneshot::Sender<Result<()>>);
+const NOTIFICATION_CHANNEL_CAPACITY: usize = 128;
+
+pub type ListenMessage = (
+    Channel,
+    oneshot::Sender<Result<broadcast::Receiver<Notification>>>,
+);
+pub type UnlistenMessage = (Channel, oneshot::Sender<Result<()>>);
 
 pub enum ListenerCommand {
     Listen(ListenMessage),
-    Unlisten(ListenMessage),
+    Unlisten(UnlistenMessage),
 }
 
 impl ListenerCommand {
-    async fn handle(
-        self,
-        listener: &mut PgListener,
-        channel_refs: &Arc<RwLock<HashMap<Channel, usize>>>,
-    ) {
+    async fn handle(self, listener: &mut PgListener, subscriptions: &ListenerSubscriptions) {
         match self {
             Self::Listen((channel, response_tx)) => {
                 ListenerService::handle_listen_request(
                     listener,
-                    channel_refs,
+                    subscriptions,
                     channel,
                     response_tx,
                 )
@@ -49,7 +51,7 @@ impl ListenerCommand {
             Self::Unlisten((channel, response_tx)) => {
                 ListenerService::handle_unlisten_request(
                     listener,
-                    channel_refs,
+                    subscriptions,
                     channel,
                     response_tx,
                 )
@@ -59,49 +61,133 @@ impl ListenerCommand {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ListenerSubscriptions {
+    inner: Arc<RwLock<HashMap<Channel, ChannelSubscription>>>,
+}
+
+#[derive(Debug)]
+struct ChannelSubscription {
+    ref_count: usize,
+    tx: broadcast::Sender<Notification>,
+}
+
+impl ListenerSubscriptions {
+    pub async fn channel_ref_count(&self, channel: &Channel) -> usize {
+        self.inner
+            .read()
+            .await
+            .get(channel)
+            .map_or(0, |subscription| subscription.ref_count)
+    }
+
+    async fn subscribe(
+        &self,
+        listener: &mut PgListener,
+        channel: Channel,
+    ) -> Result<broadcast::Receiver<Notification>> {
+        if let Some(subscription) = self.inner.write().await.get_mut(&channel) {
+            subscription.ref_count += 1;
+
+            tracing::info!(
+                "Channel {} subscription count: {}",
+                channel,
+                subscription.ref_count
+            );
+
+            return Ok(subscription.tx.subscribe());
+        }
+
+        listener.listen(channel.as_ref()).await?;
+
+        let (tx, rx) = broadcast::channel(NOTIFICATION_CHANNEL_CAPACITY);
+        tracing::info!("Now listening to channel: {} (refs: 1)", channel);
+
+        self.inner
+            .write()
+            .await
+            .insert(channel, ChannelSubscription { ref_count: 1, tx });
+
+        Ok(rx)
+    }
+
+    async fn unsubscribe(&self, listener: &mut PgListener, channel: Channel) -> Result<()> {
+        {
+            match self.inner.write().await.get_mut(&channel) {
+                None => {
+                    tracing::debug!("ignoring unlisten for inactive channel: {channel}");
+                    return Ok(());
+                }
+                Some(subscription) if subscription.ref_count > 1 => {
+                    subscription.ref_count -= 1;
+
+                    tracing::info!(
+                        "Channel {} subscription count: {} (still active)",
+                        channel,
+                        subscription.ref_count
+                    );
+
+                    return Ok(());
+                }
+                Some(_) => {}
+            }
+        }
+
+        listener.unlisten(channel.as_ref()).await?;
+        tracing::info!("Stopped listening to channel: {}", channel);
+        self.inner.write().await.remove(&channel);
+
+        Ok(())
+    }
+
+    async fn dispatch(&self, notification: Notification) {
+        let tx = self
+            .inner
+            .read()
+            .await
+            .get(&notification.channel)
+            .map(|subscription| subscription.tx.clone());
+
+        if let Some(tx) = tx {
+            let _ = tx.send(notification);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ListenerService {
     pg_listener: PgListener,
     command_tx: mpsc::Sender<ListenerCommand>,
     command_rx: mpsc::Receiver<ListenerCommand>,
-    notification_tx: broadcast::Sender<Notification>,
-    channel_refs: Arc<RwLock<HashMap<Channel, usize>>>,
+    subscriptions: ListenerSubscriptions,
 }
 
 impl ListenerService {
     pub async fn try_new(pool: &sqlx::PgPool) -> Result<Self> {
         let pg_listener = PgListener::connect_with(pool).await?;
         let (command_tx, command_rx) = mpsc::channel::<ListenerCommand>(1024);
-        let (tx, _rx) = broadcast::channel(1024);
 
         Ok(Self {
             pg_listener,
             command_tx,
             command_rx,
-            notification_tx: tx,
-            channel_refs: Arc::new(RwLock::new(HashMap::new())),
+            subscriptions: ListenerSubscriptions::default(),
         })
     }
 
     pub fn notification_listener(&self) -> NotificationListener {
-        NotificationListener::new(self.command_tx.clone(), self.notification_tx.clone())
+        NotificationListener::new(self.command_tx.clone())
     }
 
     pub async fn channel_ref_count(&self, channel: &Channel) -> usize {
-        let refs = self.channel_refs.read().await;
-        *refs.get(channel).unwrap_or(&0)
+        self.subscriptions.channel_ref_count(channel).await
     }
 
-    pub fn channel_refs(&self) -> Arc<RwLock<HashMap<Channel, usize>>> {
-        self.channel_refs.clone()
+    pub fn subscriptions(&self) -> ListenerSubscriptions {
+        self.subscriptions.clone()
     }
 
-    pub fn start(self, parent: &SubsystemHandle) {
-        let mut listener = self.pg_listener;
-        let tx = self.notification_tx;
-        let mut command_rx = self.command_rx;
-        let channel_refs = self.channel_refs;
-
+    pub fn start(mut self, parent: &SubsystemHandle) {
         parent.start(SubsystemBuilder::new(
             "listener",
             async move |subsys: &mut SubsystemHandle| {
@@ -113,8 +199,8 @@ impl ListenerService {
                             tracing::info!("shutdown requested for listener");
                             break;
                         }
-                        Some(command) = command_rx.recv() => command.handle(&mut listener, &channel_refs).await,
-                        result = Self::handle_notification(&mut listener, &tx) => {
+                        Some(command) = self.command_rx.recv() => command.handle(&mut self.pg_listener, &self.subscriptions).await,
+                        result = Self::handle_notification(&mut self.pg_listener, &self.subscriptions) => {
                             if let Err(e) = result {
                                 tracing::error!("Notification handling error: {e}");
                             }
@@ -134,74 +220,41 @@ impl ListenerService {
 
     async fn handle_listen_request(
         listener: &mut PgListener,
-        channel_refs: &Arc<RwLock<HashMap<Channel, usize>>>,
+        subscriptions: &ListenerSubscriptions,
         channel: Channel,
-        response_tx: oneshot::Sender<Result<()>>,
+        response_tx: oneshot::Sender<Result<broadcast::Receiver<Notification>>>,
     ) {
-        if let Some(count) = channel_refs.write().await.get_mut(&channel) {
-            *count += 1;
-            tracing::info!("Channel {} subscription count: {}", channel, count);
-            let _ = response_tx.send(Ok(()));
-
-            return;
+        match subscriptions.subscribe(listener, channel.clone()).await {
+            Ok(receiver) => {
+                let _ = response_tx.send(Ok(receiver));
+            }
+            Err(e) => {
+                tracing::error!("Failed to listen to channel {}: {}", channel, e);
+                let _ = response_tx.send(Err(e));
+            }
         }
-
-        if let Err(e) = listener.listen(channel.as_ref()).await {
-            tracing::error!("Failed to listen to channel {}: {}", channel, e);
-            let _ = response_tx.send(Err(e.into()));
-            return;
-        }
-
-        tracing::info!("Now listening to channel: {} (refs: 1)", channel);
-        channel_refs.write().await.insert(channel.clone(), 1);
-        let _ = response_tx.send(Ok(()));
     }
 
     async fn handle_unlisten_request(
         listener: &mut PgListener,
-        channel_refs: &Arc<RwLock<HashMap<Channel, usize>>>,
+        subscriptions: &ListenerSubscriptions,
         channel: Channel,
         response_tx: oneshot::Sender<Result<()>>,
     ) {
-        match channel_refs.write().await.get_mut(&channel) {
-            None => {
-                tracing::debug!("ignoring unlisten for inactive channel: {channel}");
-                let _ = response_tx.send(Ok(()));
-                return;
-            }
-            Some(0) => unreachable!(),
-            Some(1) => {}
-            Some(count) => {
-                *count -= 1;
-
-                tracing::info!(
-                    "Channel {} subscription count: {} (still active)",
-                    channel,
-                    count
-                );
-
-                let _ = response_tx.send(Ok(()));
-                return;
-            }
-        }
-
-        if let Err(e) = listener.unlisten(channel.as_ref()).await {
+        if let Err(e) = subscriptions.unsubscribe(listener, channel.clone()).await {
             tracing::error!("Failed to unlisten from channel {}: {}", channel, e);
-            let _ = response_tx.send(Err(e.into()));
+            let _ = response_tx.send(Err(e));
             return;
         }
-
-        tracing::info!("Stopped listening to channel: {}", channel);
-        channel_refs.write().await.remove(&channel);
         let _ = response_tx.send(Ok(()));
     }
 
     async fn handle_notification(
         listener: &mut PgListener,
-        tx: &broadcast::Sender<Notification>,
+        subscriptions: &ListenerSubscriptions,
     ) -> Result<()> {
         let notification = listener.recv().await?;
-        let _ = tx.send(notification.into());
+        subscriptions.dispatch(notification.into()).await;
         Ok(())
     }
 }
