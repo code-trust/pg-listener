@@ -16,4 +16,7 @@ pub use notification_listener::{
     NotificationListener,
     TypedRecvError,
 };
-pub use service::ListenerService;
+pub use service::{
+    ListenerService,
+    ListenerSubscriptions,
+};
