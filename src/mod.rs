@@ -6,6 +6,7 @@ mod service;
 pub use channel::{
     Channel,
     TypedChannel,
+    publish_batch,
 };
 pub use notification::{
     Notification,
