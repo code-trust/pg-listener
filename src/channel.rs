@@ -51,20 +51,12 @@ impl<T> TryFrom<String> for TypedChannel<T> {
     }
 }
 
-#[cfg_attr(not(feature = "sqlx"), stub_macros::methods)]
 impl<T: Sync> TypedChannel<T> {
     pub async fn publish(&self, conn: &mut PgConnection, message: &T) -> Result<()>
     where
         T: Serialize,
     {
-        let payload = serde_json::to_string(message).context("Failed to serialize message")?;
-
-        sqlx::query!("SELECT pg_notify($1, $2)", self.as_ref().as_ref(), &payload)
-            .execute(conn)
-            .await
-            .context("Failed to publish notification")?;
-
-        Ok(())
+        publish_batch(conn, &[(self, message)]).await
     }
 
     pub async fn publish_pool(&self, pool: &PgPool, message: &T) -> Result<()>
@@ -74,6 +66,43 @@ impl<T: Sync> TypedChannel<T> {
         let mut conn = pool.acquire().await?;
         self.publish(&mut conn, message).await
     }
+}
+
+#[cfg_attr(not(feature = "sqlx"), stub_macros::function)]
+pub async fn publish_batch<C, T>(conn: &mut PgConnection, messages: &[(C, &T)]) -> Result<()>
+where
+    C: AsRef<Channel> + Sync,
+    T: Serialize + Sync,
+{
+    if messages.is_empty() {
+        return Ok(());
+    }
+
+    let (channels, payloads): (Vec<_>, Vec<_>) = messages
+        .iter()
+        .map(|(channel, message)| {
+            Ok((
+                channel.as_ref().as_ref().to_owned(),
+                serde_json::to_string(message).context("Failed to serialize message")?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .unzip();
+
+    sqlx::query!(
+        r"
+        SELECT pg_notify(input.channel, input.payload)
+        FROM unnest($1::text [], $2::text []) AS input (channel, payload)
+        ",
+        &channels,
+        &payloads,
+    )
+    .execute(conn)
+    .await
+    .context("Failed to publish notifications")?;
+
+    Ok(())
 }
 
 impl<T> From<TypedChannel<T>> for Channel {
