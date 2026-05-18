@@ -4,7 +4,12 @@ use anyhow::{
     Context as _,
     Result,
 };
+use derive_more::{
+    Deref,
+    DerefMut,
+};
 use serde::Deserialize;
+use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::{
     broadcast,
     mpsc,
@@ -63,7 +68,10 @@ impl NotificationListener {
     }
 }
 
+#[derive(Deref, DerefMut)]
 pub struct TypedChannelGuard<T> {
+    #[deref]
+    #[deref_mut]
     channel_guard: ChannelGuard,
     _phantom: std::marker::PhantomData<T>,
 }
@@ -132,6 +140,10 @@ impl PendingListenGuard {
 impl ChannelGuard {
     pub async fn recv(&mut self) -> Result<Notification, broadcast::error::RecvError> {
         self.receiver.recv().await
+    }
+
+    pub fn drain(&mut self) {
+        while let Ok(_) | Err(TryRecvError::Lagged(_)) = self.receiver.try_recv() {}
     }
 }
 
