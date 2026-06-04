@@ -1,11 +1,6 @@
 use std::time::Duration;
 
-use backend::configuration::{
-    ConfigurationDirectory,
-    get_configuration,
-};
-use backend::database::DatabaseService;
-use backend::listener::{
+use pg_listener::{
     Channel,
     ListenerService,
     ListenerSubscriptions,
@@ -13,13 +8,14 @@ use backend::listener::{
     TypedChannel,
     TypedRecvError,
 };
-use secrecy::ExposeSecret as _;
 use serde::{
     Deserialize,
     Serialize,
 };
 use sqlx::PgPool;
 use tokio_graceful_shutdown::Toplevel;
+
+const DEFAULT_DATABASE_URL: &str = "postgres://postgres:postgres@localhost:34030/app";
 
 #[tokio::test]
 async fn publish_and_receive_simple_message() {
@@ -167,14 +163,12 @@ async fn handles_invalid_json_gracefully() {
 
     let publish_channel = channel.clone();
     tokio::spawn(async move {
-        sqlx::query!(
-            "SELECT pg_notify($1, $2)",
-            publish_channel.as_ref().as_ref(),
-            "invalid json"
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(publish_channel.as_ref().as_ref())
+            .bind("invalid json")
+            .execute(&pool)
+            .await
+            .unwrap();
     });
 
     let result = guard.recv().await;
@@ -189,7 +183,6 @@ async fn cleanup_when_guard_dropped_during_receive() {
 
     {
         let mut guard = listener.listen_typed(channel.clone()).await.unwrap();
-        // Start receiving but drop before message arrives
         tokio::spawn(async move {
             let _ = guard.recv().await;
         });
@@ -306,29 +299,22 @@ struct TestListenerService {
     listener: NotificationListener,
     subscriptions: ListenerSubscriptions,
 }
+
 impl TestListenerService {
-    pub fn notification_listener(&self) -> NotificationListener {
+    fn notification_listener(&self) -> NotificationListener {
         self.listener.clone()
     }
 
-    pub async fn channel_ref_count(&self, channel: &Channel) -> usize {
+    async fn channel_ref_count(&self, channel: &Channel) -> usize {
         self.subscriptions.channel_ref_count(channel).await
     }
 }
 
 async fn create_listener_service() -> (TestListenerService, PgPool) {
-    let mut configuration =
-        get_configuration(ConfigurationDirectory::default()).expect("Failed to get configuration");
-    configuration.database.url = "postgres://{user}:{pass}@localhost:34006/app".to_owned();
-    configuration.database.migrate = true;
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
 
-    // We need the database setup, but not the service itself
-    let _ = DatabaseService::try_new(&configuration.database)
-        .await
-        .expect("Failed to setup database");
-
-    let tenant_url = configuration.database.tenant_url();
-    let pool = PgPool::connect(tenant_url.expose_secret())
+    let pool = PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to database");
 

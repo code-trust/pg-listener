@@ -1,0 +1,34 @@
+[package]
+categories = ["database", "asynchronous"]
+description = "Tokio + sqlx integration for PostgreSQL LISTEN/NOTIFY with typed channels and ref-counted subscriptions"
+edition = "2024"
+keywords = ["postgresql", "listen", "notify", "sqlx", "tokio"]
+license = "MIT"
+name = "pg-listener"
+repository = "https://github.com/code-trust/pg-listener"
+version = "0.1.0"
+
+[features]
+e2e = []
+
+[[test]]
+name = "e2e_listener"
+path = "tests/e2e_listener.rs"
+required-features = ["e2e"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+derive_more = { version = "2", features = ["as_ref", "deref", "deref_mut", "display"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres"] }
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt-multi-thread"] }
+tokio-graceful-shutdown = "0.19"
+tracing = "0.1"
+
+[dev-dependencies]
+futures = "0.3"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt-multi-thread", "test-util"] }

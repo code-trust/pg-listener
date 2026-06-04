@@ -1,6 +1,6 @@
 use sqlx::postgres::PgNotification;
 
-use crate::listener::Channel;
+use crate::Channel;
 
 #[derive(Clone, Debug)]
 pub struct Notification {

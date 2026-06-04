@@ -1,10 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{
-    Result,
-    ensure,
-};
 use sqlx::postgres::PgListener;
 use tokio::sync::{
     RwLock,
@@ -17,7 +13,11 @@ use tokio_graceful_shutdown::{
     SubsystemHandle,
 };
 
-use crate::listener::{
+use crate::error::{
+    ListenerError,
+    UnexpectedShutdown,
+};
+use crate::{
     Channel,
     Notification,
     NotificationListener,
@@ -27,9 +27,9 @@ const NOTIFICATION_CHANNEL_CAPACITY: usize = 128;
 
 pub type ListenMessage = (
     Channel,
-    oneshot::Sender<Result<broadcast::Receiver<Notification>>>,
+    oneshot::Sender<Result<broadcast::Receiver<Notification>, sqlx::Error>>,
 );
-pub type UnlistenMessage = (Channel, oneshot::Sender<Result<()>>);
+pub type UnlistenMessage = (Channel, oneshot::Sender<Result<(), sqlx::Error>>);
 
 pub enum ListenerCommand {
     Listen(ListenMessage),
@@ -85,7 +85,7 @@ impl ListenerSubscriptions {
         &self,
         listener: &mut PgListener,
         channel: Channel,
-    ) -> Result<broadcast::Receiver<Notification>> {
+    ) -> Result<broadcast::Receiver<Notification>, sqlx::Error> {
         if let Some(subscription) = self.inner.write().await.get_mut(&channel) {
             subscription.ref_count += 1;
 
@@ -111,7 +111,11 @@ impl ListenerSubscriptions {
         Ok(rx)
     }
 
-    async fn unsubscribe(&self, listener: &mut PgListener, channel: Channel) -> Result<()> {
+    async fn unsubscribe(
+        &self,
+        listener: &mut PgListener,
+        channel: Channel,
+    ) -> Result<(), sqlx::Error> {
         {
             match self.inner.write().await.get_mut(&channel) {
                 None => {
@@ -163,8 +167,10 @@ pub struct ListenerService {
 }
 
 impl ListenerService {
-    pub async fn try_new(pool: &sqlx::PgPool) -> Result<Self> {
-        let pg_listener = PgListener::connect_with(pool).await?;
+    pub async fn try_new(pool: &sqlx::PgPool) -> Result<Self, ListenerError> {
+        let pg_listener = PgListener::connect_with(pool)
+            .await
+            .map_err(ListenerError::Connect)?;
         let (command_tx, command_rx) = mpsc::channel::<ListenerCommand>(1024);
 
         Ok(Self {
@@ -208,12 +214,11 @@ impl ListenerService {
                     }
                 }
 
-                ensure!(
-                    subsys.is_shutdown_requested(),
-                    "returned without a shutdown request"
-                );
-
-                Ok(())
+                if subsys.is_shutdown_requested() {
+                    Ok(())
+                } else {
+                    Err(UnexpectedShutdown)
+                }
             },
         ));
     }
@@ -222,7 +227,7 @@ impl ListenerService {
         listener: &mut PgListener,
         subscriptions: &ListenerSubscriptions,
         channel: Channel,
-        response_tx: oneshot::Sender<Result<broadcast::Receiver<Notification>>>,
+        response_tx: oneshot::Sender<Result<broadcast::Receiver<Notification>, sqlx::Error>>,
     ) {
         match subscriptions.subscribe(listener, channel.clone()).await {
             Ok(receiver) => {
@@ -239,7 +244,7 @@ impl ListenerService {
         listener: &mut PgListener,
         subscriptions: &ListenerSubscriptions,
         channel: Channel,
-        response_tx: oneshot::Sender<Result<()>>,
+        response_tx: oneshot::Sender<Result<(), sqlx::Error>>,
     ) {
         if let Err(e) = subscriptions.unsubscribe(listener, channel.clone()).await {
             tracing::error!("Failed to unlisten from channel {}: {}", channel, e);
@@ -252,8 +257,8 @@ impl ListenerService {
     async fn handle_notification(
         listener: &mut PgListener,
         subscriptions: &ListenerSubscriptions,
-    ) -> Result<()> {
-        let notification = listener.recv().await?;
+    ) -> Result<(), ListenerError> {
+        let notification = listener.recv().await.map_err(ListenerError::Receive)?;
         subscriptions.dispatch(notification.into()).await;
         Ok(())
     }

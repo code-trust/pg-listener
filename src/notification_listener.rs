@@ -1,9 +1,5 @@
 use std::time::Duration;
 
-use anyhow::{
-    Context as _,
-    Result,
-};
 use derive_more::{
     Deref,
     DerefMut,
@@ -16,8 +12,9 @@ use tokio::sync::{
     oneshot,
 };
 
-use crate::listener::service::ListenerCommand;
-use crate::listener::{
+use crate::error::ListenError;
+use crate::service::ListenerCommand;
+use crate::{
     Channel,
     Notification,
     TypedChannel,
@@ -34,19 +31,22 @@ impl NotificationListener {
         Self { command_tx }
     }
 
-    pub async fn listen(&self, channel: Channel) -> Result<ChannelGuard> {
+    pub async fn listen(&self, channel: Channel) -> Result<ChannelGuard, ListenError> {
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
             .send(ListenerCommand::Listen((channel.clone(), tx)))
             .await
-            .context("failed to send listen request")?;
+            .map_err(|_| ListenError::ServiceClosed)?;
 
         let mut cleanup = PendingListenGuard::new(channel.clone(), self.command_tx.clone());
 
-        let result = rx.await.context("listen service unavailable")?;
+        let result = rx.await.map_err(|_| ListenError::ServiceUnavailable)?;
         cleanup.disarm();
-        let receiver = result.context("failed to listen to channel")?;
+        let receiver = result.map_err(|source| ListenError::ListenFailed {
+            channel: channel.clone(),
+            source,
+        })?;
 
         Ok(ChannelGuard {
             channel,
@@ -55,7 +55,10 @@ impl NotificationListener {
         })
     }
 
-    pub async fn listen_typed<T>(&self, channel: TypedChannel<T>) -> Result<TypedChannelGuard<T>>
+    pub async fn listen_typed<T>(
+        &self,
+        channel: TypedChannel<T>,
+    ) -> Result<TypedChannelGuard<T>, ListenError>
     where
         T: for<'de> Deserialize<'de> + Send + Sync,
     {
@@ -103,12 +106,15 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TypedRecvError {
-    Broadcast(broadcast::error::RecvError),
+    #[error("failed to receive notification")]
+    Broadcast(#[from] broadcast::error::RecvError),
+    #[error("failed to deserialize notification on channel {channel}")]
     Deserialize {
         channel: Channel,
         payload: String,
+        #[source]
         error: serde_json::Error,
     },
 }
@@ -186,7 +192,6 @@ fn spawn_unlisten(command_tx: mpsc::Sender<ListenerCommand>, channel: Channel) {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::anyhow;
     use tokio::time::timeout;
 
     use super::*;
@@ -237,12 +242,12 @@ mod tests {
             panic!("expected listen command");
         };
         assert_eq!(received_channel, expected_channel);
-        let _ = response_tx.send(Err(anyhow!("boom")));
+        let _ = response_tx.send(Err(sqlx::Error::PoolClosed));
 
         let Err(error) = listen_task.await.unwrap() else {
             panic!("listen unexpectedly succeeded")
         };
-        assert!(error.to_string().contains("failed to listen to channel"));
+        assert!(matches!(error, ListenError::ListenFailed { .. }));
         assert!(matches!(
             timeout(Duration::from_millis(100), command_rx.recv()).await,
             Err(_) | Ok(None)

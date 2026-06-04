@@ -1,10 +1,5 @@
 use std::marker::PhantomData;
 
-use anyhow::{
-    Context as _,
-    Result,
-    ensure,
-};
 use derive_more::{
     AsRef,
     Display,
@@ -15,20 +10,24 @@ use sqlx::{
     PgPool,
 };
 
+use crate::error::{
+    InvalidChannelLengthError,
+    PublishError,
+};
+
 // Channel max length 63
 #[derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display)]
 #[as_ref(str)]
 pub struct Channel(String);
 
 impl TryFrom<String> for Channel {
-    type Error = anyhow::Error;
+    type Error = InvalidChannelLengthError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        ensure!(
-            (1..=63).contains(&value.len()),
-            "Channel length must be 1-63 characters, got {}",
-            value.len()
-        );
+        let length = value.len();
+        if !(1..=63).contains(&length) {
+            return Err(InvalidChannelLengthError { length });
+        }
         Ok(Self(value))
     }
 }
@@ -41,7 +40,7 @@ pub struct TypedChannel<T> {
 }
 
 impl<T> TryFrom<String> for TypedChannel<T> {
-    type Error = anyhow::Error;
+    type Error = InvalidChannelLengthError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -52,14 +51,14 @@ impl<T> TryFrom<String> for TypedChannel<T> {
 }
 
 impl<T: Sync> TypedChannel<T> {
-    pub async fn publish(&self, conn: &mut PgConnection, message: &T) -> Result<()>
+    pub async fn publish(&self, conn: &mut PgConnection, message: &T) -> Result<(), PublishError>
     where
         T: Serialize,
     {
         publish_batch(conn, &[(self, message)]).await
     }
 
-    pub async fn publish_pool(&self, pool: &PgPool, message: &T) -> Result<()>
+    pub async fn publish_pool(&self, pool: &PgPool, message: &T) -> Result<(), PublishError>
     where
         T: Serialize,
     {
@@ -68,8 +67,10 @@ impl<T: Sync> TypedChannel<T> {
     }
 }
 
-#[cfg_attr(not(feature = "sqlx"), stub_macros::function)]
-pub async fn publish_batch<C, T>(conn: &mut PgConnection, messages: &[(C, &T)]) -> Result<()>
+pub async fn publish_batch<C, T>(
+    conn: &mut PgConnection,
+    messages: &[(C, &T)],
+) -> Result<(), PublishError>
 where
     C: AsRef<Channel> + Sync,
     T: Serialize + Sync,
@@ -83,24 +84,23 @@ where
         .map(|(channel, message)| {
             Ok((
                 channel.as_ref().as_ref().to_owned(),
-                serde_json::to_string(message).context("Failed to serialize message")?,
+                serde_json::to_string(message)?,
             ))
         })
-        .collect::<Result<Vec<_>>>()?
+        .collect::<Result<Vec<_>, PublishError>>()?
         .into_iter()
         .unzip();
 
-    sqlx::query!(
+    sqlx::query(
         r"
         SELECT pg_notify(input.channel, input.payload)
-        FROM unnest($1::text [], $2::text []) AS input (channel, payload)
+        FROM unnest($1::text[], $2::text[]) AS input (channel, payload)
         ",
-        &channels,
-        &payloads,
     )
+    .bind(&channels)
+    .bind(&payloads)
     .execute(conn)
-    .await
-    .context("Failed to publish notifications")?;
+    .await?;
 
     Ok(())
 }
