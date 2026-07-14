@@ -6,7 +6,7 @@ keywords = ["postgresql", "listen", "notify", "sqlx", "tokio"]
 license = "MIT"
 name = "pg-listener"
 repository = "https://github.com/code-trust/pg-listener"
-version = "0.1.0"
+version = "0.1.1"
 
 [features]
 e2e = []
