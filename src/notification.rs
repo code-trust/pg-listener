@@ -28,3 +28,13 @@ pub struct TypedNotification<T: std::fmt::Debug> {
     pub channel: Channel,
     pub payload: T,
 }
+
+/// Connection lifecycle events are delivered separately from channel payloads.
+/// Restored means every active LISTEN has been reinstalled; take an authoritative
+/// snapshot before relying on subsequent notifications.
+#[derive(Clone, Debug)]
+pub enum SubscriptionEvent<T> {
+    Notification(T),
+    Unavailable,
+    Restored,
+}

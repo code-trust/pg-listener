@@ -19,7 +19,7 @@ tasks:
     cmds:
       - defer: docker compose down --remove-orphans
       - docker compose up -d --wait
-      - cargo test --features e2e --test e2e_listener
+      - cargo test --features e2e
 
   format:
     deps:

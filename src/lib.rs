@@ -10,13 +10,14 @@ pub use channel::{
     publish_batch,
 };
 pub use error::{
-    InvalidChannelLengthError,
+    InvalidChannelError,
     ListenError,
     ListenerError,
     PublishError,
 };
 pub use notification::{
     Notification,
+    SubscriptionEvent,
     TypedNotification,
 };
 pub use notification_listener::{

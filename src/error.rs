@@ -1,9 +1,11 @@
 use crate::Channel;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("channel length must be 1-63 characters, got {length}")]
-pub struct InvalidChannelLengthError {
-    pub length: usize,
+pub enum InvalidChannelError {
+    #[error("channel length must be 1-63 bytes, got {length}")]
+    Length { length: usize },
+    #[error("channel must not contain NUL bytes")]
+    ContainsNul,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -47,7 +49,3 @@ pub enum ListenError {
         source: sqlx::Error,
     },
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("listener subsystem exited without a shutdown request")]
-pub(crate) struct UnexpectedShutdown;
