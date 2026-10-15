@@ -1,6 +1,6 @@
 # pg-listener
 
-PostgreSQL [`LISTEN`](https://www.postgresql.org/docs/current/sql-listen.html) / [`NOTIFY`](https://www.postgresql.org/docs/current/sql-notify.html) for Tokio: one `PgListener` per pool, ref-counted subscriptions, typed JSON channels, RAII `UNLISTEN`.
+PostgreSQL [`LISTEN`](https://www.postgresql.org/docs/current/sql-listen.html) / [`NOTIFY`](https://www.postgresql.org/docs/current/sql-notify.html) for Tokio: one dedicated `PgListener` connection per service, ref-counted subscriptions, typed JSON channels, RAII `UNLISTEN`.
 
 ## Install
 
@@ -43,7 +43,30 @@ TypedChannel::<OrderUpdated>::try_from("orders".to_owned())?
 let n = guard.recv().await?;
 ```
 
-Channel names must be 1–63 characters (`Channel::try_from` / `TypedChannel::try_from`).
+Channel names must be 1–63 bytes and contain no NUL bytes
+(`Channel::try_from` / `TypedChannel::try_from`).
+
+## Connection recovery
+
+`listen()` and `listen_typed()` acknowledge only after PostgreSQL accepts `LISTEN`.
+Take an initial snapshot after subscribing, then use `recv_event()` to detect
+outages and reload authoritative state after `Restored`:
+
+```rust
+use pg_listener::SubscriptionEvent;
+
+loop {
+    match guard.recv_event().await? {
+        SubscriptionEvent::Notification(notification) => handle(notification.payload),
+        SubscriptionEvent::Unavailable => mark_unavailable(),
+        SubscriptionEvent::Restored => reload_authoritative_state().await?,
+    }
+}
+```
+
+`Restored` means all active subscriptions are live again; it can arrive without
+a preceding `Unavailable` event. Recovery discards buffered notifications, so
+reload state before relying on subsequent events. `recv()` hides lifecycle events.
 
 ## Development
 

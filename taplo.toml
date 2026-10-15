@@ -1,3 +1,5 @@
+exclude = [".direnv/**", "target/**"]
+
 [formatting]
 column_width = 100
 reorder_keys = true

@@ -11,7 +11,7 @@ use sqlx::{
 };
 
 use crate::error::{
-    InvalidChannelLengthError,
+    InvalidChannelError,
     PublishError,
 };
 
@@ -21,13 +21,17 @@ use crate::error::{
 pub struct Channel(String);
 
 impl TryFrom<String> for Channel {
-    type Error = InvalidChannelLengthError;
+    type Error = InvalidChannelError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let length = value.len();
         if !(1..=63).contains(&length) {
-            return Err(InvalidChannelLengthError { length });
+            return Err(InvalidChannelError::Length { length });
         }
+        if value.contains('\0') {
+            return Err(InvalidChannelError::ContainsNul);
+        }
+
         Ok(Self(value))
     }
 }
@@ -40,7 +44,7 @@ pub struct TypedChannel<T> {
 }
 
 impl<T> TryFrom<String> for TypedChannel<T> {
-    type Error = InvalidChannelLengthError;
+    type Error = InvalidChannelError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -108,5 +112,25 @@ where
 impl<T> From<TypedChannel<T>> for Channel {
     fn from(channel: TypedChannel<T>) -> Self {
         channel.inner
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn nul_bytes_are_rejected_for_raw_and_typed_channels() {
+        for name in ["\0", "before\0after", "ending\0"] {
+            assert_eq!(
+                Channel::try_from(name.to_owned()),
+                Err(InvalidChannelError::ContainsNul)
+            );
+
+            assert_eq!(
+                TypedChannel::<String>::try_from(name.to_owned()),
+                Err(InvalidChannelError::ContainsNul)
+            );
+        }
     }
 }
